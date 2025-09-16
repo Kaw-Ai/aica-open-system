@@ -1,0 +1,26 @@
+---- Property: The AICA system can initialize and create all required components
+---- This is a basic sanity check to ensure the AICA system loads and initializes properly
+
+sload ../aica.maude
+
+omod AICA-BASIC-CHECK is
+  inc AICA .
+
+  vars P O G A D T M : Oid .
+  var  S S' : String .
+  var  Conf : Configuration .
+  var  F : Float .
+  var  N : Nat .
+
+  ---- Abstract away button presses and value changes for this basic test
+  eq buttonPressed(O, G, S) = none .
+  eq valueChanged(O, G, S, S') = none .
+
+endom
+
+---- Test: AICA system can initialize without getting stuck
+---- Expected: Should reach a stable state with AICA object created
+search { <PCA> create(Aica, oid(0), oid(1)), 0 } 
+       =>* { < P : Aica | busy : false > Conf, Tm } .
+
+eof

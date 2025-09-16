@@ -293,8 +293,9 @@ def main():
 
 	import argparse
 
-	parser = argparse.ArgumentParser(description='PCA open system')
-	parser.add_argument('--two', '-2', help='Second variation of the model', action='store_true')
+	parser = argparse.ArgumentParser(description='PCA/AICA open system')
+	parser.add_argument('--two', '-2', help='Second variation of the PCA model', action='store_true')
+	parser.add_argument('--aica', '-a', help='Run AICA (AI Controlled Autonomy) system instead of PCA', action='store_true')
 
 	args = parser.parse_args()
 
@@ -307,7 +308,12 @@ def main():
 	guiManager = GuiManager()
 	maude.connectRlHook('guiHook', guiManager)
 
-	maude.load('pca2.maude' if args.two else 'pca.maude')
+	if args.aica:
+		maude.load('aica.maude')
+		print("Starting AICA (AI Controlled Autonomy) system...")
+	else:
+		maude.load('pca2.maude' if args.two else 'pca.maude')
+		print("Starting PCA (Patient Controlled Analgesia) system...")
 
 	if (m := maude.getCurrentModule()) is None:
 		print('Bad module.')
@@ -319,10 +325,17 @@ def main():
 		print(init.erewrite())
 		guiManager.destroy()
 
-	# Start the sensor servers
-	temp_proc = subprocess.Popen(('./sensor-bin', 'data/s1_sit.txt', read_constant(m, 'PORT-TEMP-SENSOR')))
-	pulse_proc = subprocess.Popen(('./sensor-bin', 'data/p1.txt', read_constant(m, 'PORT-PULSE-SENSOR')))
-	actuator_proc = subprocess.Popen(('./actuator-bin'))
+	# Start the sensor servers with different data for AICA vs PCA
+	if args.aica:
+		# For AICA: system load sensor and decision confidence sensor
+		temp_proc = subprocess.Popen(('./sensor-bin', 'data/s1_walk.txt', read_constant(m, 'PORT-TEMP-SENSOR')))  # More active data for system load
+		pulse_proc = subprocess.Popen(('./sensor-bin', 'data/p3.txt', read_constant(m, 'PORT-PULSE-SENSOR')))  # Different confidence pattern
+		actuator_proc = subprocess.Popen(('./actuator-bin', 'aica-actuator.pipe'))
+	else:
+		# For PCA: temperature and pulse sensors  
+		temp_proc = subprocess.Popen(('./sensor-bin', 'data/s1_sit.txt', read_constant(m, 'PORT-TEMP-SENSOR')))
+		pulse_proc = subprocess.Popen(('./sensor-bin', 'data/p1.txt', read_constant(m, 'PORT-PULSE-SENSOR')))
+		actuator_proc = subprocess.Popen(('./actuator-bin'))
 
 	# Run erewrite in a different thread
 	thread = threading.Thread(target=maude_task)
