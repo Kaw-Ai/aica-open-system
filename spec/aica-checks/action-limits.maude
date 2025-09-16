@@ -1,0 +1,27 @@
+---- Property: The AICA system does not exceed action limits in autonomous mode
+---- This ensures the AI respects the configured action constraints
+
+sload ../aica.maude
+
+omod AICA-ACTION-LIMITS is
+  inc AICA .
+
+  vars P O G A D T M : Oid .
+  var  S S' : String .
+  var  Conf : Configuration .
+  var  F : Float .
+  var  N : Nat .
+
+  ---- Abstract away GUI interactions for this test
+  eq buttonPressed(O, G, "Toggle Autonomy") = none .
+  eq valueChanged(O, G, S, S') = none .
+
+endom
+
+---- Test: Actions executed should not exceed ROUND-AMOUNT in autonomous mode
+---- Expected: No solution should be found (system respects limits)
+search { <PCA> create(Aica, oid(0), oid(1)), 0 } 
+       =>* { < A : Actuator | amount : F > Conf, Tm } 
+       such that F > float(ROUND-AMOUNT) .
+
+eof

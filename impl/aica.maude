@@ -1,0 +1,240 @@
+---- The AICA (AI Controlled Autonomy) implementation for the open system.
+---- This version connects to external sensors and actuators for real system control.
+
+sload ../spec/configuration
+sload json
+sload sensor  
+sload actuator
+sload mongodb
+sload monitor
+sload gui
+
+omod AICA is
+  inc OPEN-SYSTEM .
+  inc SENSOR .
+  inc ACTUATOR .
+  inc GUI .
+  inc DATABASE .
+  pr CONVERSION .
+  inc MONITOR .
+  inc JSON .
+
+  ---- System configuration constants
+  eq IP-TEMP-SENSOR = "127.0.0.1" .
+  eq IP-PULSE-SENSOR = "127.0.0.1" .
+  eq PORT-TEMP-SENSOR = 8001 .
+  eq PORT-PULSE-SENSOR = 8002 .
+  eq DATABASE-URI = "mongodb://127.0.0.1:27017/aicadb" .
+  eq ACTUATOR-PATH = "aica-actuator.pipe" .
+
+  eq TICK-PERIOD = 1 seconds . 
+  eq SHOT-AMOUNT = 1 . 
+  eq ROUND-AMOUNT = 10 . 
+  eq TIME-BETWEEN-SHOTS = 2 seconds . 
+  eq ROUND-TIME = 60 seconds .  
+  eq MONITOR-PERIOD = 5 seconds . 
+
+  class Aica | supervisor : Maybe{Oid}, 
+               system-load : Float, 
+               decision-confidence : Float, 
+               actions-executed : Nat, 
+               action-intensity : Nat,
+               ai-agent : Maybe{Oid}, 
+               remaining-actions : Nat, 
+               time-to-next-round : Nat, 
+               time-to-next-action : Nat, 
+               state-sensor : Maybe{Oid}, 
+               decision-sensor : Maybe{Oid}, 
+               actuator : Maybe{Oid}, 
+               database : Maybe{Oid},
+               monitor : Maybe{Oid},
+               tick : Maybe{Oid}, 
+               currentTime : Nat,
+               busy : Bool,
+               autonomous-mode : Bool .
+
+  msg create : Cid Oid Oid -> Msg .
+
+  vars P G S SS DS O A D DG AG T M SG : Oid .
+  vars N N' N'' CR CS Tm Tm' AI : Nat .
+  vars NV NV' F SL SL' DC DC' : Float .
+  var  RN : Rat .
+  var  B AM : Bool .
+  vars FN SV SV' : String .
+  var  EF : Map{String, Bool} .
+  var  Conf : Configuration . 
+
+  ---- AICA system initialization - similar to PCA but for autonomy
+  rl [create] :
+     create(Aica, O, P)
+  => < P : Aica | supervisor : null, 
+                  system-load : 0.0, decision-confidence : 0.0, actions-executed : 0, action-intensity : 0,
+                  ai-agent : null, 
+                  remaining-actions : 0, time-to-next-round : 0, time-to-next-action : 0,
+                  state-sensor : null,
+                  decision-sensor : null,
+                  actuator : null,
+                  database : null, 
+                  monitor : null,
+                  tick : null,
+                  currentTime : 0, 
+                  busy : true,
+                  autonomous-mode : false >
+     createWindow(guiManager, P, "AI Agent Control",
+         ("remaining actions" |-> false,
+          "time to next action (min:sec)" |-> false,
+          "time to next round (min:sec)" |-> false,
+          "autonomous mode" |-> false),
+         ("Execute Action" |-> true, "Toggle Autonomy" |-> true))
+     createTempSensor(sensorManager, P)
+     createPulseSensor(sensorManager, P)
+     createActuator(actuatorManager, P)
+     createDatabase(databaseManager, P)
+     createMonitor(monitorManager, P)
+     getTimeSinceEpoch(timeManager, P) .
+
+  ---- Continuation of initialization 
+  rl [create] :
+     < P : Aica | supervisor : null, ai-agent : null, state-sensor : null, decision-sensor : null, actuator : null, database : null, tick : null > 
+     createdWindow(P, guiManager, G) 
+     createdTempSensor(P, sensorManager, SS) 
+     createdPulseSensor(P, sensorManager, DS) 
+     createdDatabase(P, databaseManager, D) 
+     createdMonitor(P, monitorManager, M)
+     createdActuator(P, actuatorManager, A) 
+     gotTimeSinceEpoch(P, timeManager, Tm)
+  => < P : Aica | ai-agent : G, state-sensor : SS, decision-sensor : DS, actuator : A, database : D, 
+                  remaining-actions : ROUND-AMOUNT, time-to-next-action : 0, time-to-next-round : ROUND-TIME, monitor : M, currentTime : Tm > 
+     createWindow(guiManager, P, "AICA Supervisor",
+         ("system load" |-> false,
+          "decision confidence" |-> false,
+          "actions count" |-> true,
+          "action intensity" |-> true,
+          "warnings" |-> false),
+         ("Emergency Stop" |-> true, "Reset System" |-> true)) 
+     setValue(G, P, "remaining actions", string(ROUND-AMOUNT, 10))
+     setValue(G, P, "time to next action (min:sec)", timeString(0))
+     setValue(G, P, "time to next round (min:sec)", timeString(ROUND-TIME)) 
+     setValue(G, P, "autonomous mode", "false")
+     startMonitor(M, P, D)
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("AICA system started")))) .
+
+  rl [create] :
+     < P : Aica | supervisor : null, ai-agent : AG > 
+     createdWindow(P, guiManager, G)
+     valueSet(P, AG)
+     valueSet(P, AG)
+     valueSet(P, AG)
+     valueSet(P, AG)
+     startedMonitor(P, M)
+     inserted(P, D)     
+  => < P : Aica | supervisor : G, actions-executed : ROUND-AMOUNT, action-intensity : SHOT-AMOUNT > 
+     setValue(G, P, "system load", "0.0")
+     setValue(G, P, "decision confidence", "0.0")
+     setValue(G, P, "actions count", string(ROUND-AMOUNT, 10))
+     setValue(G, P, "action intensity", string(SHOT-AMOUNT, 10))
+     setValue(G, P, "warnings", "System Ready") .
+
+  rl [create] :
+     < P : Aica | supervisor : G > 
+     valueSet(P, G)
+     valueSet(P, G)
+     valueSet(P, G)
+     valueSet(P, G)
+     valueSet(P, G)
+  => < P : Aica | busy : false > .
+
+  ---- Button handlers for AI agent interface
+  rl [buttonPressed] :
+     < P : Aica | ai-agent : G, remaining-actions : N, time-to-next-action : N', actuator : A, 
+                  action-intensity : AI, database : D, currentTime : Tm, busy : false >
+     buttonPressed(P, G, "Execute Action")
+  => if N' > 0 or N == 0 then
+          < P : Aica | busy : true > 
+          processing(buttonPressed(P, G, "Execute Action ignored"))
+          insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("action button pressed"), "decision" |-> s("ignored"))))
+     else 
+          < P : Aica | remaining-actions : sd(N, AI), time-to-next-action : TIME-BETWEEN-SHOTS, busy : true > 
+          processing(buttonPressed(P, G, "Execute Action"))
+          shoot(A, P, float(AI))
+          setValue(G, P, "remaining actions", string(sd(N, AI), 10))
+          insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("manual action executed"), "amount" |-> n(AI))))
+     fi .
+
+  rl [buttonPressed] :
+     < P : Aica | ai-agent : G, autonomous-mode : AM, database : D, currentTime : Tm, busy : false >
+     buttonPressed(P, G, "Toggle Autonomy")
+  => < P : Aica | autonomous-mode : not AM, busy : true > 
+     processing(buttonPressed(P, G, "Toggle Autonomy"))
+     setValue(G, P, "autonomous mode", if AM then "false" else "true" fi)
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("autonomy toggled"), "mode" |-> s(if AM then "manual" else "autonomous" fi)))) .
+
+  ---- Supervisor emergency controls
+  rl [buttonPressed] :
+     < P : Aica | supervisor : G, autonomous-mode : AM, database : D, currentTime : Tm, busy : false >
+     buttonPressed(P, G, "Emergency Stop")
+  => < P : Aica | autonomous-mode : false, busy : true > 
+     processing(buttonPressed(P, G, "Emergency Stop"))
+     setValue(G, P, "warnings", "EMERGENCY STOP ACTIVATED")
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("emergency stop"), "previous-mode" |-> s(if AM then "autonomous" else "manual" fi)))) .
+
+  ---- Value change handlers
+  rl [valueChanged] :
+     < P : Aica | supervisor : G, actions-executed : N, database : D, currentTime : Tm, busy : false >
+     valueChanged(P, G, "actions count", SV)
+  => < P : Aica | actions-executed : rat(SV, 10), busy : true > 
+     processing(valueChanged(P, G, "actions count", SV))
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("actions count changed"), "value" |-> n(rat(SV, 10))))) .
+
+  rl [valueChanged] :
+     < P : Aica | supervisor : G, action-intensity : AI, database : D, currentTime : Tm, busy : false >
+     valueChanged(P, G, "action intensity", SV)
+  => < P : Aica | action-intensity : rat(SV, 10), busy : true >
+     processing(valueChanged(P, G, "action intensity", SV))
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("action intensity changed"), "value" |-> n(rat(SV, 10))))) . 
+
+  ---- Processing completion handlers
+  rl < P : Aica | >
+     processing(valueChanged(P, G, FN, SV))
+     inserted(P, D)     
+  => < P : Aica | busy : false > .
+
+  rl < P : Aica | >
+     processing(buttonPressed(P, G, SV))
+     inserted(P, D)     
+  => < P : Aica | busy : false > .
+
+  rl < P : Aica | >
+     processing(buttonPressed(P, G, SV))
+     valueSet(P, G)
+     inserted(P, D)     
+  => < P : Aica | busy : false > .
+
+  rl < P : Aica | >
+     processing(buttonPressed(P, G, SV))
+     shot(P, A)
+     valueSet(P, G)
+     inserted(P, D)     
+  => < P : Aica | busy : false > .
+
+  ---- Round reset mechanism
+  rl [round-reset] :
+     < P : Aica | time-to-next-round : 0, remaining-actions : N, database : D, currentTime : Tm >
+  => < P : Aica | time-to-next-round : ROUND-TIME, remaining-actions : ROUND-AMOUNT >
+     insert(D, P, d(("time" |-> n(Tm), "msg" |-> s("autonomy round reset"), "previous-remaining" |-> n(N)))) .
+
+  ---- Helper function for time display
+  op timeString : Nat -> String .
+  eq timeString(N) = string(N quo 60, 10) + ":" + 
+                     (if N rem 60 < 10 then "0" else "" fi) + string(N rem 60, 10) .
+
+  ---- Initial system configuration
+  op init : -> Configuration .
+  eq init = < timeManager : ObjectManager | index : 0 > 
+            < sensorManager : ObjectManager | index : 0 > 
+            < actuatorManager : ObjectManager | index : 0 > 
+            < databaseManager : ObjectManager | index : 0 > 
+            < monitorManager : ObjectManager | index : 0 > 
+            create(Aica, oid(0), oid(1)) .
+
+endom
